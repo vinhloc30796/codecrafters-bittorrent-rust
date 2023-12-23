@@ -4,30 +4,58 @@ use std::env;
 // Available if you need it!
 // use serde_bencode
 
-fn decode_bencoded_string(encoded_value: &str) -> serde_json::Value {
+fn decode_bencoded_string(encoded_value: &str) -> (usize, serde_json::Value) {
     // Example: "5:hello" -> "hello"
     let colon_index = encoded_value.find(':').unwrap();
     let number_string = &encoded_value[..colon_index];
     let number = number_string.parse::<i64>().unwrap();
     let string = &encoded_value[colon_index + 1..colon_index + 1 + number as usize];
-    return serde_json::Value::String(string.to_string());
+    let ending_index = colon_index + 1 + number as usize;
+    return (ending_index, serde_json::Value::String(string.to_string()));
 }
 
-fn decode_bencoded_integer(encoded_value: &str) -> serde_json::Value {
+fn decode_bencoded_integer(encoded_value: &str) -> (usize, serde_json::Value) {
     // Example: "i3e" -> 3
-    let end_index = encoded_value.find('e').unwrap();
-    let number_string = &encoded_value[1..end_index];
+    // Get number string from start until 'e'
+    let number_string = &encoded_value
+        .chars()
+        .skip(1)
+        .take_while(|c| *c != 'e')
+        .collect::<String>();
     let number = number_string.parse::<i64>().unwrap();
-    return serde_json::Value::Number(serde_json::Number::from(number));
+    let ending_index = 2 + number_string.len();
+    return (
+        ending_index,
+        serde_json::Value::Number(serde_json::Number::from(number)),
+    );
+}
+
+// Example: "l5:helloi3ee" -> ["hello", 3]
+// Example 2: "l4:spam4:eggse" -> ["spam", "eggs"]
+// Example 3: "l4:spaml1:a1:bee" -> ["spam", ["a", "b"]]
+fn decode_bencoded_list(encoded_value: &str) -> (usize, serde_json::Value) {
+    // Get string from start until 'e'
+    let mut list = Vec::new();
+    let mut encoded_value = &encoded_value[1..];
+    let mut ending_index = 1;
+    while encoded_value.chars().next().unwrap() != 'e' {
+        let (child_index, decoded_value) = decode_bencoded_value(encoded_value);
+        list.push(decoded_value);
+        encoded_value = &encoded_value[child_index..];
+        ending_index += child_index;
+    }
+    ending_index += 1;
+    return (ending_index, serde_json::Value::Array(list));
 }
 
 #[allow(dead_code)]
-fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
+fn decode_bencoded_value(encoded_value: &str) -> (usize, serde_json::Value) {
     // If encoded_value starts with a digit, it's a number
     let first_char = encoded_value.chars().next().unwrap();
     match first_char {
         '0'..='9' => return decode_bencoded_string(encoded_value),
         'i' => return decode_bencoded_integer(encoded_value),
+        'l' => return decode_bencoded_list(encoded_value),
         _ => panic!("Unhandled bencoded value: {}", encoded_value),
     }
 }
@@ -43,7 +71,7 @@ fn main() {
 
         // Uncomment this block to pass the first stage
         let encoded_value = &args[2];
-        let decoded_value = decode_bencoded_value(encoded_value);
+        let (_, decoded_value) = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.to_string());
     } else {
         println!("unknown command: {}", args[1])
