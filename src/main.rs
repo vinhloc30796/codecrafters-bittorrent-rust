@@ -1,17 +1,29 @@
+use anyhow::Context;
 use serde_json;
 use std::env;
 
 // Available if you need it!
 // use serde_bencode
 
-fn decode_bencoded_string(encoded_value: &str) -> (usize, serde_json::Value) {
-    // Example: "5:hello" -> "hello"
-    let colon_index = encoded_value.find(':').unwrap();
-    let number_string = &encoded_value[..colon_index];
-    let number = number_string.parse::<i64>().unwrap();
-    let string = &encoded_value[colon_index + 1..colon_index + 1 + number as usize];
-    let ending_index = colon_index + 1 + number as usize;
-    return (ending_index, serde_json::Value::String(string.to_string()));
+// Should take in either a string or a byte array
+// Example: "5:hello" -> "hello"
+fn decode_bencoded_string<T: AsRef<[u8]>>(encoded_value: T) -> (usize, serde_json::Value) {
+    let encoded_value = encoded_value.as_ref();
+    let colon_index = encoded_value
+        .iter()
+        .position(|&c| c == b':')
+        // return if found, panic with message if not
+        .with_context(|| format!("Could not find ':' in {:?}", encoded_value))
+        .unwrap();
+    let length_part = &encoded_value[..colon_index];
+    let length = length_part
+        .iter()
+        .map(|&c| (c - b'0') as usize)
+        .fold(0, |acc, x| acc * 10 + x);
+    let text_part = &encoded_value[colon_index + 1..colon_index + 1 + length as usize];
+    let text = String::from_utf8_lossy(text_part);
+    let ending_index = colon_index + 1 + length as usize;
+    return (ending_index, serde_json::Value::String(text.to_string()));
 }
 
 fn decode_bencoded_integer(encoded_value: &str) -> (usize, serde_json::Value) {
@@ -84,19 +96,45 @@ fn decode_bencoded_value(encoded_value: &str) -> (usize, serde_json::Value) {
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
+// Usage: your_bittorrent.sh info "<torrent_file>"
 fn main() {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
+    // You can use print statements as follows for debugging, they'll be visible when running tests.
+    // println!("Logs from your program will appear here!");
 
-    if command == "decode" {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        // println!("Logs from your program will appear here!");
-
-        // Uncomment this block to pass the first stage
-        let encoded_value = &args[2];
-        let (_, decoded_value) = decode_bencoded_value(encoded_value);
-        println!("{}", decoded_value.to_string());
-    } else {
-        println!("unknown command: {}", args[1])
+    match command as &str {
+        "decode" => {
+            let encoded_value = &args[2];
+            let (_, decoded_value) = decode_bencoded_value(encoded_value);
+            println!("{}", decoded_value.to_string());
+        }
+        "info" => {
+            // Open the file & read it into a string
+            let filename = &args[2];
+            let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
+            println!("Original contents: {:?}", contents_u8);
+            let contents = String::from_utf8_lossy(contents_u8).to_string();
+            println!("Parsed contents: {:?}", contents);
+            // Decode the bencoded dict
+            let (_, decoded_value) = decode_bencoded_dict(&contents);
+            // Convert into a map so we can access the keys
+            let decoded_dict = decoded_value.as_object().unwrap();
+            // Get the tracker URL and the piece length
+            let tracker_url = decoded_dict.get("announce").unwrap().as_str().unwrap();
+            let piece_length = decoded_dict
+                .get("info")
+                .unwrap()
+                .get("piece length")
+                .unwrap()
+                .as_u64()
+                .unwrap();
+            // Print the tracker URL and the piece length
+            println!("Tracker URL: {}", tracker_url);
+            println!("Piece length: {}", piece_length);
+        }
+        _ => {
+            println!("unknown command: {}", args[1])
+        }
     }
 }
