@@ -26,19 +26,31 @@ fn decode_bencoded_string<T: AsRef<[u8]>>(encoded_value: T) -> (usize, serde_jso
     return (ending_index, serde_json::Value::String(text.to_string()));
 }
 
-fn decode_bencoded_integer(encoded_value: &str) -> (usize, serde_json::Value) {
-    // Example: "i3e" -> 3
+// Example: "i3e" -> 3
+// Example 2: "i-3e" -> -3
+fn decode_bencoded_integer<T: AsRef<[u8]>>(encoded_value: T) -> (usize, serde_json::Value) {
     // Get number string from start until 'e'
-    let number_string = &encoded_value
-        .chars()
-        .skip(1)
-        .take_while(|c| *c != 'e')
-        .collect::<String>();
-    let number = number_string.parse::<i64>().unwrap();
-    let ending_index = 2 + number_string.len();
+    let encoded_value = encoded_value.as_ref();
+    let mut ending_index = 2;
+    let mut number = 0;
+    let mut mult = 1;
+    for (_, &c) in encoded_value[1..].iter().enumerate() {
+        match c {
+            b'e' => break,
+            b'-' => {
+                ending_index += 1;
+                mult = -1;
+            }
+            b'0'..=b'9' => {
+                number = number * 10 + (c - b'0') as i64;
+                ending_index += 1;
+            }
+            _ => panic!("Invalid bencoded integer: {:?}", encoded_value),
+        }
+    }
     return (
         ending_index,
-        serde_json::Value::Number(serde_json::Number::from(number)),
+        serde_json::Value::Number(serde_json::Number::from(number * mult)),
     );
 }
 
