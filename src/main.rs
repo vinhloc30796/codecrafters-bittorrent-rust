@@ -22,9 +22,8 @@ fn main() {
             // Open the file & read it into a string
             let filename = &args[2];
             let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
-            let contents = String::from_utf8_lossy(contents_u8);
-            println!("U8: {:?}", contents_u8);
-            println!("String: {}", contents);
+            // println!("U8: {:?}", contents_u8);
+            // println!("String: {}", contents);
             // Decode the bencoded dict
             let (_, decoded_value) = decode_bencoded_dict(&contents_u8);
             // Convert into a map so we can access the keys
@@ -34,9 +33,9 @@ fn main() {
             let piece_length = decoded_dict
                 .get("info")
                 .unwrap()
-                .get("piece length")
+                .get("length")
                 .unwrap()
-                .as_u64()
+                .as_i64()
                 .unwrap();
             // Print the tracker URL and the piece length
             println!("Tracker URL: {}", tracker_url);
