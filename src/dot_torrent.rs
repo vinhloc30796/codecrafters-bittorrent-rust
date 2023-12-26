@@ -73,4 +73,14 @@ impl Info {
         hasher.update(bencode.bencode());
         hasher.finalize().encode_hex::<String>()
     }
+
+    pub fn piece_hash(&self) -> Vec<String> {
+        // Pieces is a byte string, so we need to split it into 20 byte chunks
+        let piece_chunks = self.pieces.chunks(20);
+        
+        // Return
+        piece_chunks
+            .map(|chunk| chunk.encode_hex::<String>())
+            .collect::<Vec<String>>()
+    }
 }
