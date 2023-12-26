@@ -1,4 +1,11 @@
-use bittorrent_starter_rust::decoder::{decode_bencoded_dict, decode_bencoded_value};
+use bittorrent_starter_rust::decoder::{
+    decode_bencoded_dict,
+    decode_bencoded_value,
+    // Bencodeable, BencodedValue,
+};
+use bittorrent_starter_rust::dot_torrent::MetainfoFile;
+// use sha1::{Digest, Sha1};
+// use hex::ToHex;
 use std::env;
 
 // Available if you need it!
@@ -16,7 +23,8 @@ fn main() {
         "decode" => {
             let encoded_value = &args[2];
             let (_, decoded_value) = decode_bencoded_value(encoded_value);
-            println!("{}", decoded_value.to_string());
+            let json_value = serde_json::Value::from(decoded_value);
+            println!("{}", json_value);
         }
         "info" => {
             // Open the file & read it into a string
@@ -24,22 +32,18 @@ fn main() {
             let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
             // println!("U8: {:?}", contents_u8);
             // println!("String: {}", contents);
+
             // Decode the bencoded dict
             let (_, decoded_value) = decode_bencoded_dict(&contents_u8);
-            // Convert into a map so we can access the keys
-            let decoded_dict = decoded_value.as_object().unwrap();
-            // Get the tracker URL and the piece length
-            let tracker_url = decoded_dict.get("announce").unwrap().as_str().unwrap();
-            let piece_length = decoded_dict
-                .get("info")
-                .unwrap()
-                .get("length")
-                .unwrap()
-                .as_i64()
-                .unwrap();
-            // Print the tracker URL and the piece length
-            println!("Tracker URL: {}", tracker_url);
-            println!("Length: {}", piece_length);
+            let json_value = serde_json::Value::from(decoded_value);
+
+            let metainfo: MetainfoFile = serde_json::from_value(json_value).unwrap();
+            let info = metainfo.info;
+            println!("Tracker URL: {}", metainfo.announce);
+            println!("Length: {}", info.length);
+
+            // Hash the info dict
+            println!("Info Hash: {}", info.info_hash());
         }
         _ => {
             println!("unknown command: {}", args[1])
