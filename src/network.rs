@@ -1,9 +1,7 @@
-
-
 use crate::decoder::{BencodedString, BencodedValue};
 use anyhow::{anyhow, Error};
-use serde::{Serialize};
-
+use serde::Serialize;
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 // Serialize the payload to a query string
 #[derive(Serialize)]
@@ -52,7 +50,8 @@ pub struct TrackerResponse {
     // A string, which contains list of peers that your client can connect to.
     // Each peer is represented using 6 bytes.
     // The first 4 bytes are the peer's IP address and the last 2 bytes are the peer's port number
-    pub peers: Vec<String>,
+    // pub peers: Vec<String>,
+    pub peers: Vec<SocketAddrV4>,
 }
 
 impl TryFrom<&BencodedValue> for TrackerResponse {
@@ -60,7 +59,8 @@ impl TryFrom<&BencodedValue> for TrackerResponse {
 
     fn try_from(value: &BencodedValue) -> Result<Self, Self::Error> {
         let mut interval: u64 = 0;
-        let mut peers: Vec<String> = Vec::new();
+        // let mut peers: Vec<String> = Vec::new();
+        let mut peers: Vec<SocketAddrV4> = Vec::new();
 
         // Error if not a BencodedValue::Dict
         match value {
@@ -87,10 +87,11 @@ impl TryFrom<&BencodedValue> for TrackerResponse {
                         peer_chunks.iter().for_each(|chunk| {
                             let ip = &chunk[0..4];
                             let port = &chunk[4..6];
-                            let ip_str = format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
                             let port_str = format!("{}", u16::from_be_bytes([port[0], port[1]]));
-                            let peer_str = format!("{}:{}", ip_str, port_str);
-                            peers.push(peer_str);
+                            // std::net
+                            let new_ip = Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]);
+                            let new_peer = SocketAddrV4::new(new_ip, port_str.parse().unwrap());
+                            peers.push(new_peer);
                         });
                     }
                     _ => return Err(anyhow!("No peers")),
@@ -118,7 +119,11 @@ impl Default for TrackerPayload {
     }
 }
 
-pub async fn ping_tracker(tracker_url: &str, info_hash: [u8; 20], length: i64) -> Result<TrackerResponse, Error> {
+pub async fn ping_tracker(
+    tracker_url: &str,
+    info_hash: [u8; 20],
+    length: i64,
+) -> Result<TrackerResponse, Error> {
     let payload = TrackerPayload {
         // info_hash: metainfo.info.info_hash().as_bytes().to_vec(),
         peer_id: "-TR2940-2b3b6b4b5b6b".to_string(),
