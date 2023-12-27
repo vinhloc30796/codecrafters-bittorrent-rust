@@ -198,7 +198,14 @@ pub fn decode_bencoded_string<T: AsRef<[u8]>>(encoded_value: T) -> (usize, Benco
     let length_part = &encoded_value[..colon_index];
     let length = String::from_utf8_lossy(length_part)
         .parse::<usize>()
-        .with_context(|| format!("Could not parse length: {:?}", length_part))
+        .with_context(|| {
+            format!(
+                "Could not parse length: {:?} (str {}) -- input: {:?}",
+                length_part,
+                String::from_utf8_lossy(length_part),
+                encoded_value
+            )
+        })
         .unwrap();
     let text_part = &encoded_value[colon_index + 1..colon_index + 1 + length as usize];
     let bencode_text = BencodedString(text_part.to_vec());
@@ -495,10 +502,9 @@ mod tests {
         );
 
         // Another
-        let input = "d8:intervali60e12:min intervali60e5:peers18:��!M��>RY��>U�%8:completei3e10:incompletei1ee"
-            .as_bytes();
+        let input = b"d12:min intervali60e5:peers18:\xa5\xe8!M\xc8\xe5\xb2>RY\xc9\x01\xb2>U\x14\xc9%8:completei3e10:incompletei1e8:intervali60ee";
         let (index, value) = decode_bencoded_dict(input);
-        assert_eq!(index, 95);
+        assert_eq!(index, 92);
         let mut expected = BTreeMap::new();
         expected.insert(
             BencodedString(b"interval".to_vec()),
@@ -511,7 +517,7 @@ mod tests {
         expected.insert(
             BencodedString(b"peers".to_vec()),
             BencodedValue::String(
-                b"\x9A\x9A!\x8DM\x9A\x9A>\x90RY\x9A\x9A>\x90U\x9A\x9A\x90\x9A%8"
+                b"\xa5\xe8!M\xc8\xe5\xb2>RY\xc9\x01\xb2>U\x14\xc9%"
                     .to_vec()
                     .into(),
             ),
