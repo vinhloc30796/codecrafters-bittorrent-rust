@@ -1,2 +1,3 @@
 pub mod decoder;
-pub mod dot_torrent;
+pub mod file;
+pub mod network;
