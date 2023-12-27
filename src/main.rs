@@ -1,6 +1,6 @@
 use bittorrent_starter_rust::decoder::decode_bencoded_value;
 use bittorrent_starter_rust::file::{Info, MetainfoFile};
-use bittorrent_starter_rust::network::ping_tracker;
+use bittorrent_starter_rust::network::{ping_tracker, shake_hands};
 // use sha1::{Digest, Sha1};
 // use hex::ToHex;
 use std::env;
@@ -48,7 +48,9 @@ async fn main() {
                 metainfo.announce.as_str(),
                 metainfo.info.info_hash(),
                 metainfo.info.length,
-            ).await {
+            )
+            .await
+            {
                 Ok(tracker_response) => {
                     println!("Peers:");
                     tracker_response.peers.iter().for_each(|peer| {
@@ -56,7 +58,37 @@ async fn main() {
                     });
                 }
                 Err(e) => {
-                    println!("Error: {}", e);
+                    println!("Peers: Error: {}", e);
+                }
+            }
+        }
+        "handshake" => {
+            let filename = &args[2];
+            let metainfo = MetainfoFile::read_from_file(filename).unwrap();
+
+            let peers = match ping_tracker(
+                metainfo.announce.as_str(),
+                metainfo.info.info_hash(),
+                metainfo.info.length,
+            )
+            .await
+            {
+                Ok(tracker_response) => tracker_response.peers,
+                Err(e) => {
+                    println!("Peers: Error: {}", e);
+                    return;
+                }
+            };
+            let peer = peers.first().unwrap();
+
+            match shake_hands(*peer, metainfo.info.info_hash()) {
+                Ok(handshake) => {
+                    println!("Handshake: {:?}", handshake);
+                    let hex_peer_id = handshake.peer_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    println!("Peer ID: {}", hex_peer_id);
+                }
+                Err(e) => {
+                    println!("Handshake: Error: {}", e);
                 }
             }
         }

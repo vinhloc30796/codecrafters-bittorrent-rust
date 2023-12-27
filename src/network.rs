@@ -1,7 +1,12 @@
 use crate::decoder::{BencodedString, BencodedValue};
 use anyhow::{anyhow, Error};
 use serde::Serialize;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::{
+    io::{Read, Write},
+    net::{Ipv4Addr, SocketAddrV4, TcpStream},
+};
+
+const PEER_ID: &str = "-TR2940-2b3b6b4b5b6b";
 
 // Serialize the payload to a query string
 #[derive(Serialize)]
@@ -119,6 +124,67 @@ impl Default for TrackerPayload {
     }
 }
 
+#[derive(Debug)]
+pub struct PeerHandshake {
+    // length of the protocol string (BitTorrent protocol) which is 19 (1 byte)
+    length: u64,
+    // protocol string (19 bytes) -- default: 'BitTorrent protocol'
+    protocol: String,
+    // 8 reserved bytes (all 0) (8 bytes)
+    reserved: Vec<u8>,
+    // info hash (20 bytes)
+    info_hash: Vec<u8>,
+    // peer id (20 bytes)
+    pub peer_id: Vec<u8>,
+}
+
+impl Default for PeerHandshake {
+    fn default() -> Self {
+        PeerHandshake {
+            length: 19,
+            protocol: "BitTorrent protocol".to_string(),
+            reserved: vec![0; 8],
+            info_hash: vec![],
+            peer_id: PEER_ID.as_bytes().to_vec(),
+        }
+    }
+}
+
+impl PeerHandshake {
+    pub fn new(info_hash: Vec<u8>, peer_id: Vec<u8>) -> Self {
+        PeerHandshake {
+            info_hash,
+            peer_id,
+            // Rest is default
+            ..Default::default()
+        }
+    }
+}
+
+impl From<PeerHandshake> for Vec<u8> {
+    fn from(value: PeerHandshake) -> Self {
+        let mut handshake: Vec<u8> = Vec::new();
+        handshake.push(value.length as u8);
+        handshake.extend(value.protocol.as_bytes());
+        handshake.extend(&value.reserved);
+        handshake.extend(&value.info_hash);
+        handshake.extend(&value.peer_id);
+        handshake
+    }
+}
+
+impl From<Vec<u8>> for PeerHandshake {
+    fn from(value: Vec<u8>) -> Self {
+        let mut handshake = PeerHandshake::default();
+        handshake.length = value[0] as u64;
+        handshake.protocol = String::from_utf8(value[1..20].to_vec()).unwrap();
+        handshake.reserved = value[20..28].to_vec();
+        handshake.info_hash = value[28..48].to_vec();
+        handshake.peer_id = value[48..68].to_vec();
+        handshake
+    }
+}
+
 pub async fn ping_tracker(
     tracker_url: &str,
     info_hash: [u8; 20],
@@ -126,7 +192,7 @@ pub async fn ping_tracker(
 ) -> Result<TrackerResponse, Error> {
     let payload = TrackerPayload {
         // info_hash: metainfo.info.info_hash().as_bytes().to_vec(),
-        peer_id: "-TR2940-2b3b6b4b5b6b".to_string(),
+        peer_id: PEER_ID.to_string(),
         port: 6881,
         uploaded: 0,
         downloaded: 0,
@@ -161,4 +227,15 @@ pub fn url_encode(t: &[u8; 20]) -> anyhow::Result<String> {
         s.push_str(&format!("{:02x}", b));
     }
     Ok(s)
+}
+
+pub fn shake_hands(peer_addr: SocketAddrV4, info_hash: [u8; 20]) -> Result<PeerHandshake, Error> {
+    let mut stream = TcpStream::connect(peer_addr)?;
+    let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
+    let handshake_bytes: Vec<u8> = handshake.into();
+    stream.write_all(&handshake_bytes)?;
+    let mut buf = [0; 1024];
+    stream.read(&mut buf)?;
+    let peer_handshake = PeerHandshake::from(buf.to_vec());
+    Ok(peer_handshake)
 }
