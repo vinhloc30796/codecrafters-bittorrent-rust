@@ -187,13 +187,19 @@ pub fn decode_bencoded_string<T: AsRef<[u8]>>(encoded_value: T) -> (usize, Benco
         .iter()
         .position(|&c| c == b':')
         // return if found, panic with message if not
-        .with_context(|| format!("Could not find ':' in {:?}", encoded_value))
+        .with_context(|| {
+            format!(
+                "Could not find ':' in {:?}, in string {:?}",
+                encoded_value,
+                String::from_utf8_lossy(encoded_value)
+            )
+        })
         .unwrap();
     let length_part = &encoded_value[..colon_index];
-    let length = length_part
-        .iter()
-        .map(|&c| (c - b'0') as usize)
-        .fold(0, |acc, x| acc * 10 + x);
+    let length = String::from_utf8_lossy(length_part)
+        .parse::<usize>()
+        .with_context(|| format!("Could not parse length: {:?}", length_part))
+        .unwrap();
     let text_part = &encoded_value[colon_index + 1..colon_index + 1 + length as usize];
     let bencode_text = BencodedString(text_part.to_vec());
     let ending_index = colon_index + 1 + length as usize;
@@ -298,6 +304,8 @@ pub fn decode_bencoded_value<T: AsRef<[u8]> + std::fmt::Debug>(
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
 
     #[test]
@@ -305,6 +313,50 @@ mod tests {
         let (index, value) = decode_bencoded_string("5:hello".as_bytes());
         assert_eq!(index, 7);
         assert_eq!(value, BencodedValue::String(b"hello".to_vec().into()));
+    }
+
+    #[test]
+    fn test_decode_bencoded_nonutf8_string() {
+        // First
+        let (index, value) = decode_bencoded_string(b"4:\x80\x81\x82\x83");
+        assert_eq!(index, 6);
+        assert_eq!(
+            value,
+            BencodedValue::String(vec![0x80, 0x81, 0x82, 0x83].into())
+        );
+
+        // Second
+        let mut input: Vec<u8> = Vec::new();
+        let byte_vec = &[
+            0xBF, 0xBD, 0x01, 0xEF, 0xBF, 0xBD, 0x3E, 0x55, 0x14, 0xEF, 0xBF, 0xBD, 0x25, 0x38,
+        ];
+        // Push in "14"
+        input.extend_from_slice(b"14:");
+        input.extend_from_slice(byte_vec);
+
+        let (index, value) = decode_bencoded_string(input);
+        assert_eq!(index, 17);
+        assert_eq!(
+            value,
+            BencodedValue::String(BencodedString(byte_vec.into()))
+        );
+
+        // Third
+        let mut input: Vec<u8> = Vec::new();
+        let byte_vec = [
+            0xEF, 0xBF, 0xBD, 0xEF, 0xBF, 0xBD, 0x21, 0x4D, 0xEF, 0xBF, 0xBD, 0xEF, 0xBF, 0xBD,
+            0x3E, 0x52, 0x59, 0xEF,
+        ];
+        // Push in "18"
+        input.extend_from_slice(b"18:");
+        input.extend_from_slice(&byte_vec);
+
+        let (index, value) = decode_bencoded_string(input);
+        assert_eq!(index, 21);
+        assert_eq!(
+            value,
+            BencodedValue::String(BencodedString(byte_vec.into()))
+        );
     }
 
     #[test]
@@ -417,6 +469,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_decode_bencoded_dict_with_bytes() {
+        // Some non-utf8 bytes
+        let input = b"d4:foodd1:a4:\x80\x81\x82\x83ee";
+        let (index, value) = decode_bencoded_dict(input);
+        assert_eq!(index, 19);
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            BencodedString(b"food".to_vec()),
+            BencodedValue::Dict(BTreeMap::from([(
+                BencodedString(b"a".to_vec()),
+                BencodedValue::String(b"\x80\x81\x82\x83".to_vec().into()),
+            )])),
+        );
+        assert_eq!(
+            value,
+            BencodedValue::Dict(expected),
+            "d4:foodd1:a4:<byte>ee"
+        );
+        assert_eq!(
+            format!("{}", value),
+            "{food: {a: ����}}",
+            "d4:foodd1:a4:<byte>ee"
+        );
+
+        // Another
+        let input = "d8:intervali60e12:min intervali60e5:peers18:��!M��>RY��>U�%8:completei3e10:incompletei1ee"
+            .as_bytes();
+        let (index, value) = decode_bencoded_dict(input);
+        assert_eq!(index, 95);
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            BencodedString(b"interval".to_vec()),
+            BencodedValue::Integer(60),
+        );
+        expected.insert(
+            BencodedString(b"min interval".to_vec()),
+            BencodedValue::Integer(60),
+        );
+        expected.insert(
+            BencodedString(b"peers".to_vec()),
+            BencodedValue::String(
+                b"\x9A\x9A!\x8DM\x9A\x9A>\x90RY\x9A\x9A>\x90U\x9A\x9A\x90\x9A%8"
+                    .to_vec()
+                    .into(),
+            ),
+        );
+        expected.insert(
+            BencodedString(b"complete".to_vec()),
+            BencodedValue::Integer(3),
+        );
+        expected.insert(
+            BencodedString(b"incomplete".to_vec()),
+            BencodedValue::Integer(1),
+        );
+        assert_eq!(
+            value,
+            BencodedValue::Dict(expected),
+            "d8:intervali60e12:min intervali60e5:peers18:��!M��>RY��>U�%8:completei3e10:incompletei1ee"
+        );
+    }
+
+    // Test encoding
     #[test]
     fn test_encode_bencoded_vec() {
         let value = BencodedValue::String(b"hello".to_vec().into());

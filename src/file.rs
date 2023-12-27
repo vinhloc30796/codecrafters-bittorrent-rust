@@ -46,7 +46,7 @@ impl From<Info> for BencodedValue {
 }
 
 impl Info {
-    pub fn info_hash(&self) -> String {
+    pub fn info_hash(&self) -> [u8; 20] {
         let name_bytes = self.name.clone().into_bytes();
         let hashmap = BTreeMap::from([
             (
@@ -67,20 +67,37 @@ impl Info {
             ),
         ]);
         let bencode = BencodedValue::Dict(hashmap.into());
-        println!("Bencode: {:?}", bencode);
+        // println!("Bencode: {:?}", bencode);
 
         let mut hasher = Sha1::new();
         hasher.update(bencode.bencode());
-        hasher.finalize().encode_hex::<String>()
+        hasher.finalize().into()
     }
 
     pub fn piece_hash(&self) -> Vec<String> {
         // Pieces is a byte string, so we need to split it into 20 byte chunks
         let piece_chunks = self.pieces.chunks(20);
-        
+
         // Return
         piece_chunks
             .map(|chunk| chunk.encode_hex::<String>())
             .collect::<Vec<String>>()
+    }
+}
+
+impl MetainfoFile {
+    pub fn read_from_file(filename: &str) -> Result<Self, std::io::Error> {
+        // Open the file & read it into a string
+        let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
+        // println!("U8: {:?}", contents_u8);
+        // println!("String: {}", contents);
+
+        // Decode the bencoded dict
+        let decoded_value = BencodedValue::from(contents_u8);
+        let json_value = serde_json::Value::from(decoded_value);
+        match serde_json::from_value(json_value) {
+            Ok(metainfo) => Ok(metainfo),
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+        }
     }
 }

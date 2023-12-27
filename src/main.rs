@@ -1,9 +1,6 @@
-use bittorrent_starter_rust::decoder::{
-    decode_bencoded_dict,
-    decode_bencoded_value,
-    // Bencodeable, BencodedValue,
-};
-use bittorrent_starter_rust::dot_torrent::{MetainfoFile, Info};
+use bittorrent_starter_rust::decoder::decode_bencoded_value;
+use bittorrent_starter_rust::file::{Info, MetainfoFile};
+use bittorrent_starter_rust::network::ping_tracker;
 // use sha1::{Digest, Sha1};
 // use hex::ToHex;
 use std::env;
@@ -13,7 +10,8 @@ use std::env;
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
 // Usage: your_bittorrent.sh info "<torrent_file>"
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -27,27 +25,40 @@ fn main() {
             println!("{}", json_value);
         }
         "info" => {
-            // Open the file & read it into a string
             let filename = &args[2];
-            let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
-            // println!("U8: {:?}", contents_u8);
-            // println!("String: {}", contents);
+            let metainfo = MetainfoFile::read_from_file(filename).unwrap();
 
-            // Decode the bencoded dict
-            let (_, decoded_value) = decode_bencoded_dict(&contents_u8);
-            let json_value = serde_json::Value::from(decoded_value);
-
-            let metainfo: MetainfoFile = serde_json::from_value(json_value).unwrap();
+            // Print out the info dict
             let info: Info = metainfo.info;
             println!("Tracker URL: {}", metainfo.announce);
             println!("Length: {}", info.length);
 
             // Hash the info dict
-            println!("Info Hash: {}", info.info_hash());
+            println!("Info Hash: {}", hex::encode(info.info_hash()));
             println!("Piece Length: {}", info.piece_length);
             let piece_hashes: Vec<String> = info.piece_hash();
             // Print piece hashes on new line
             println!("Pieces Hashes:\n{}", piece_hashes.join("\n"));
+        }
+        "peers" => {
+            let filename = &args[2];
+            let metainfo = MetainfoFile::read_from_file(filename).unwrap();
+
+            match ping_tracker(
+                metainfo.announce.as_str(),
+                metainfo.info.info_hash(),
+                metainfo.info.length,
+            ).await {
+                Ok(tracker_response) => {
+                    println!("Peers:");
+                    tracker_response.peers.iter().for_each(|peer| {
+                        println!("{}", peer);
+                    });
+                }
+                Err(e) => {
+                    println!("Error: {}", e);
+                }
+            }
         }
         _ => {
             println!("unknown command: {}", args[1])
