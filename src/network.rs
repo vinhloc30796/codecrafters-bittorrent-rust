@@ -229,6 +229,53 @@ pub fn url_encode(t: &[u8; 20]) -> anyhow::Result<String> {
     Ok(s)
 }
 
+pub struct PeerMessage {
+    // message length prefix (4 bytes)
+    length: u32,
+    // message type (1 byte)
+    message_type: PeerMessageType,
+    // message payload (length bytes)
+    payload: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq)]
+#[repr(u8)]
+enum PeerMessageType {
+    Choke = 0,
+    Unchoke,
+    Interested,
+    NotInterested,
+    Have,
+    Bitfield,
+    Request,
+    Piece,
+    Cancel,
+}
+
+impl From<Vec<u8>> for PeerMessage {
+    fn from(value: Vec<u8>) -> Self {
+        let length = u32::from_be_bytes([value[0], value[1], value[2], value[3]]);
+        let message_type = match value[4] {
+            0 => PeerMessageType::Choke,
+            1 => PeerMessageType::Unchoke,
+            2 => PeerMessageType::Interested,
+            3 => PeerMessageType::NotInterested,
+            4 => PeerMessageType::Have,
+            5 => PeerMessageType::Bitfield,
+            6 => PeerMessageType::Request,
+            7 => PeerMessageType::Piece,
+            8 => PeerMessageType::Cancel,
+            _ => panic!("Invalid message type"),
+        };
+        let payload = value[5..].to_vec();
+        PeerMessage {
+            length,
+            message_type,
+            payload,
+        }
+    }
+}
+
 pub struct PeerStream {
     stream: TcpStream,
     state: PeerState,
@@ -262,6 +309,18 @@ impl PeerStream {
         let peer_handshake = PeerHandshake::from(buf.to_vec());
         // println!("Peer Handshake: {:?}", peer_handshake);
         Ok(peer_handshake)
+    }
+
+    pub async fn bitfield(&mut self) -> Result<(), Error> {
+        // Assert that we are in the handshake state
+        match self.state {
+            PeerState::Handshake => {}
+            _ => return Err(anyhow!("Not in handshake state")),
+        }
+        let mut buf = [0; 1024];
+        self.stream.read(&mut buf)?;
+        
+        Ok(())
     }
 }
 
@@ -386,5 +445,14 @@ mod tests {
                 50, 98, 51, 98, 54, 98, 52, 98, 53, 98, 54
             ]
         );
+    }
+
+    #[test]
+    fn test_peer_message_from() {
+        let message_bytes = vec![0, 0, 0, 1, 0];
+        let message = PeerMessage::from(message_bytes);
+        assert_eq!(message.length, 1);
+        assert_eq!(message.message_type, PeerMessageType::Choke);
+        assert_eq!(message.payload, Vec::<u8>::new());
     }
 }
