@@ -1,6 +1,6 @@
 use bittorrent_starter_rust::decoder::decode_bencoded_value;
 use bittorrent_starter_rust::file::{Info, MetainfoFile};
-use bittorrent_starter_rust::network::{ping_tracker, shake_hands};
+use bittorrent_starter_rust::network::{ping_tracker, PeerStream};
 // use sha1::{Digest, Sha1};
 // use hex::ToHex;
 use std::env;
@@ -80,8 +80,9 @@ async fn main() {
                 }
             };
             let peer = peers.first().unwrap();
+            let mut peer_stream = PeerStream::new(*peer);
 
-            match shake_hands(*peer, metainfo.info.info_hash()) {
+            match peer_stream.handshake(metainfo.info.info_hash()) {
                 Ok(handshake) => {
                     println!("Handshake: {:?}", handshake);
                     let hex_peer_id = handshake.peer_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();

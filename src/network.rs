@@ -229,15 +229,40 @@ pub fn url_encode(t: &[u8; 20]) -> anyhow::Result<String> {
     Ok(s)
 }
 
-pub fn shake_hands(peer_addr: SocketAddrV4, info_hash: [u8; 20]) -> Result<PeerHandshake, Error> {
-    let mut stream = TcpStream::connect(peer_addr)?;
-    let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
-    let handshake_bytes: Vec<u8> = handshake.into();
-    stream.write_all(&handshake_bytes)?;
-    let mut buf = [0; 1024];
-    stream.read(&mut buf)?;
-    let peer_handshake = PeerHandshake::from(buf.to_vec());
-    Ok(peer_handshake)
+pub struct PeerStream {
+    stream: TcpStream,
+    state: PeerState,
+}
+
+enum PeerState {
+    Init,
+    Handshake,
+    Bitfield,
+    Interested,
+    Unchoke,
+    Request,
+    Piece,
+}
+
+impl PeerStream {
+    pub fn new(peer_addr: SocketAddrV4) -> Self {
+        let stream = TcpStream::connect(peer_addr).unwrap();
+        PeerStream {
+            stream,
+            state: PeerState::Init,
+        }
+    }
+
+    pub fn handshake(&mut self, info_hash: [u8; 20]) -> Result<PeerHandshake, Error> {
+        let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
+        let handshake_bytes: Vec<u8> = handshake.into();
+        self.stream.write_all(&handshake_bytes)?;
+        let mut buf = [0; 1024];
+        self.stream.read(&mut buf)?;
+        let peer_handshake = PeerHandshake::from(buf.to_vec());
+        // println!("Peer Handshake: {:?}", peer_handshake);
+        Ok(peer_handshake)
+    }
 }
 
 #[cfg(test)]
@@ -289,7 +314,7 @@ mod tests {
     fn test_tracker_response_try_from() {
         let bencoded = BencodedValue::from(
             b"d8:intervali1800e5:peers12:\x7f\x00\x00\x01\x1a\x90\x7f\x00\x00\x01\x1b\x90e"
-            .as_slice(),
+                .as_slice(),
         );
         let tracker_response = TrackerResponse::try_from(&bencoded).unwrap();
         assert_eq!(tracker_response.interval, 1800);
