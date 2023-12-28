@@ -1,6 +1,6 @@
 use bittorrent_starter_rust::decoder::decode_bencoded_value;
 use bittorrent_starter_rust::file::{Info, MetainfoFile};
-use bittorrent_starter_rust::network::{ping_tracker, PeerStream};
+use bittorrent_starter_rust::network::{ping_tracker, PeerStream, PeerMessage};
 // use sha1::{Digest, Sha1};
 // use hex::ToHex;
 use std::env;
@@ -85,7 +85,11 @@ async fn main() {
             match peer_stream.handshake(metainfo.info.info_hash()) {
                 Ok(handshake) => {
                     println!("Handshake: {:?}", handshake);
-                    let hex_peer_id = handshake.peer_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    let hex_peer_id = handshake
+                        .peer_id
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>();
                     println!("Peer ID: {}", hex_peer_id);
                 }
                 Err(e) => {
@@ -116,7 +120,11 @@ async fn main() {
             match peer_stream.handshake(metainfo.info.info_hash()) {
                 Ok(handshake) => {
                     println!("Handshake: {:?}", handshake);
-                    let hex_peer_id = handshake.peer_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    let hex_peer_id = handshake
+                        .peer_id
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>();
                     println!("Peer ID: {}", hex_peer_id);
                 }
                 Err(e) => {
@@ -132,6 +140,38 @@ async fn main() {
                     println!("Bitfield: Error: {}", e);
                 }
             }
+
+            match peer_stream.write_interested() {
+                Ok(_) => {
+                    println!("Interested: Sent");
+                }
+                Err(e) => {
+                    println!("Interested: Error: {}", e);
+                }
+            }
+
+            match peer_stream.read_unchoke() {
+                Ok(_) => {
+                    println!("Unchoke: Received");
+                }
+                Err(e) => {
+                    println!("Unchoke: Error: {}", e);
+                }
+            }
+
+            // Chunk pieces into 16 * 1024 byte chunks with index
+            // then download each chunk
+            let pieces = metainfo.info.pieces;
+            let downloads = pieces
+                .chunks(16 * 1024)
+                .enumerate()
+                .map(|(index, piece)| {
+                    peer_stream
+                        .download_piece(piece.into(), index as u8)
+                        .unwrap()
+                })
+                .collect::<Vec<PeerMessage>>();
+            println!("Download: {}", downloads[0]);
         }
         _ => {
             println!("unknown command: {}", args[1])
