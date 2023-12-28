@@ -93,6 +93,46 @@ async fn main() {
                 }
             }
         }
+        "download_piece" => {
+            let filename = &args[2];
+            let metainfo = MetainfoFile::read_from_file(filename).unwrap();
+
+            let peers = match ping_tracker(
+                metainfo.announce.as_str(),
+                metainfo.info.info_hash(),
+                metainfo.info.length,
+            )
+            .await
+            {
+                Ok(tracker_response) => tracker_response.peers,
+                Err(e) => {
+                    println!("Peers: Error: {}", e);
+                    return;
+                }
+            };
+            let peer = peers.first().unwrap();
+            let mut peer_stream = PeerStream::new(*peer);
+
+            match peer_stream.handshake(metainfo.info.info_hash()) {
+                Ok(handshake) => {
+                    println!("Handshake: {:?}", handshake);
+                    let hex_peer_id = handshake.peer_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                    println!("Peer ID: {}", hex_peer_id);
+                }
+                Err(e) => {
+                    println!("Handshake: Error: {}", e);
+                }
+            }
+
+            match peer_stream.read_bitfield() {
+                Ok(bitfield) => {
+                    println!("Bitfield: {:?}", bitfield);
+                }
+                Err(e) => {
+                    println!("Bitfield: Error: {}", e);
+                }
+            }
+        }
         _ => {
             println!("unknown command: {}", args[1])
         }

@@ -229,6 +229,7 @@ pub fn url_encode(t: &[u8; 20]) -> anyhow::Result<String> {
     Ok(s)
 }
 
+#[derive(Debug)]
 pub struct PeerMessage {
     // message length prefix (4 bytes)
     length: u32,
@@ -239,7 +240,6 @@ pub struct PeerMessage {
 }
 
 #[derive(Debug, PartialEq)]
-#[repr(u8)]
 enum PeerMessageType {
     Choke = 0,
     Unchoke,
@@ -276,6 +276,16 @@ impl From<Vec<u8>> for PeerMessage {
     }
 }
 
+impl From<PeerMessage> for Vec<u8> {
+    fn from(value: PeerMessage) -> Self {
+        let mut message: Vec<u8> = Vec::new();
+        message.extend(value.length.to_be_bytes().to_vec());
+        message.push(value.message_type as u8);
+        message.extend(value.payload);
+        message
+    }
+}
+
 pub struct PeerStream {
     stream: TcpStream,
     state: PeerState,
@@ -304,23 +314,72 @@ impl PeerStream {
         let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
         let handshake_bytes: Vec<u8> = handshake.into();
         self.stream.write_all(&handshake_bytes)?;
-        let mut buf = [0; 1024];
+
+        // Read the handshake response
+        let mut buf = [0; 68];
         self.stream.read(&mut buf)?;
         let peer_handshake = PeerHandshake::from(buf.to_vec());
+        self.state = PeerState::Handshake;
         // println!("Peer Handshake: {:?}", peer_handshake);
         Ok(peer_handshake)
     }
 
-    pub async fn bitfield(&mut self) -> Result<(), Error> {
+    pub fn read(&mut self) -> Result<PeerMessage, Error> {
         // Assert that we are in the handshake state
         match self.state {
             PeerState::Handshake => {}
             _ => return Err(anyhow!("Not in handshake state")),
         }
-        let mut buf = [0; 1024];
-        self.stream.read(&mut buf)?;
+
+        // Read the length prefix
+        let mut length_prefix: [u8; 4] = [0; 4];
+        self.stream.read_exact(&mut length_prefix)?;
+        let length = u32::from_be_bytes(length_prefix);
+
+        // Read the message type
+        let mut message_type: [u8; 1] = [0; 1];
+        self.stream.read_exact(&mut message_type)?;
+        let message_type = match message_type[0] {
+            0 => PeerMessageType::Choke,
+            1 => PeerMessageType::Unchoke,
+            2 => PeerMessageType::Interested,
+            3 => PeerMessageType::NotInterested,
+            4 => PeerMessageType::Have,
+            5 => PeerMessageType::Bitfield,
+            6 => PeerMessageType::Request,
+            7 => PeerMessageType::Piece,
+            8 => PeerMessageType::Cancel,
+            _ => panic!("Invalid message type"),
+        };
+
+        // Read the payload
+        let mut payload: Vec<u8> = vec![0; length as usize - 1];
+        self.stream.read_exact(&mut payload)?;
+
+        // Return the message
+        Ok(PeerMessage {
+            length,
+            message_type,
+            payload,
+        })
+    }
+
+    pub fn read_bitfield(&mut self) -> Result<PeerMessage, Error> {
+        // Assert that we are in the handshake state
+        match self.state {
+            PeerState::Handshake => {}
+            _ => return Err(anyhow!("Not in handshake state")),
+        }
         
-        Ok(())
+        // Read the bitfield message
+        let message = self.read()?;
+        match message.message_type {
+            PeerMessageType::Bitfield => {
+                self.state = PeerState::Bitfield;
+                Ok(message)
+            }
+            _ => Err(anyhow!("Expected bitfield message")),
+        }
     }
 }
 
