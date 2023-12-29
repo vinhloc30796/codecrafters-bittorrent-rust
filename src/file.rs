@@ -74,6 +74,18 @@ impl Info {
         hasher.finalize().into()
     }
 
+    pub fn pieces(&self) -> Vec<[u8; 20]> {
+        return self
+            .pieces
+            .chunks(20)
+            .map(|chunk| {
+                let mut array = [0; 20];
+                array.copy_from_slice(chunk);
+                array
+            })
+            .collect();
+    }
+
     pub fn piece_hash(&self) -> Vec<String> {
         // Pieces is a byte string, so we need to split it into 20 byte chunks
         let piece_chunks = self.pieces.chunks(20);

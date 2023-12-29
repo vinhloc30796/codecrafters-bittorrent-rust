@@ -5,6 +5,7 @@ use std::{
     fmt::{self, Display, Formatter},
     io::{Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
+    path::PathBuf,
 };
 
 const PEER_ID: &str = "-TR2940-2b3b6b4b5b6b";
@@ -289,8 +290,8 @@ impl From<Vec<u8>> for PeerMessage {
     }
 }
 
-impl From<PeerMessage> for Vec<u8> {
-    fn from(value: PeerMessage) -> Self {
+impl From<&PeerMessage> for Vec<u8> {
+    fn from(value: &PeerMessage) -> Self {
         let mut message: Vec<u8> = Vec::new();
         match value {
             PeerMessage::Choke => {
@@ -429,7 +430,7 @@ impl PeerStream {
         }
     }
 
-    pub fn handshake(&mut self, info_hash: [u8; 20]) -> Result<PeerHandshake, Error> {
+    pub fn handshake(&mut self, info_hash: &[u8; 20]) -> Result<PeerHandshake, Error> {
         let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
         let handshake_bytes: Vec<u8> = handshake.into();
         self.stream.write_all(&handshake_bytes)?;
@@ -471,7 +472,7 @@ impl PeerStream {
         Ok(msg)
     }
 
-    pub fn write(&mut self, message: PeerMessage) -> Result<(), Error> {
+    pub fn write(&mut self, message: &PeerMessage) -> Result<(), Error> {
         // Assert that we are in the handshake state
         match self.state {
             PeerState::Init => return Err(anyhow!("Cannot write if not yet handshaked")),
@@ -512,7 +513,7 @@ impl PeerStream {
 
         // Write the interested message
         let message = PeerMessage::Interested;
-        self.write(message)?;
+        self.write(&message)?;
         self.state = PeerState::Interested;
         Ok(())
     }
@@ -535,37 +536,49 @@ impl PeerStream {
         }
     }
 
-    pub fn download_piece(&mut self, piece: Vec<u8>, order: u8) -> Result<PeerMessage, Error> {
+    pub fn download_piece(
+        &mut self,
+        piece_id: u32,
+        piece_length: &i64,
+    ) -> Result<Vec<PeerMessage>, Error> {
+        const CHUNK_SIZE: i64 = 16 * 1024;
         // Assert that we are in the Unchoke state
         match self.state {
             PeerState::Unchoke => {}
             _ => return Err(anyhow!("Not in unchoke state")),
         }
 
-        // Assert that the piece has max length 16KiB i.e. 16 * 1024 bytes
-        if piece.len() > 16 * 1024 {
-            return Err(anyhow!("Piece is too large: {} bytes", piece.len()));
-        }
+        // Make a Vec of requests to cover piece_length with chunk
+        let n_reqs = (piece_length / CHUNK_SIZE) as usize;
+        let reqs = (0..n_reqs)
+            .map(|i| PeerMessage::Request {
+                index: piece_id,
+                begin: (i * CHUNK_SIZE as usize) as u32,
+                length: CHUNK_SIZE as u32,
+            })
+            .collect::<Vec<PeerMessage>>();
 
-        // Send the pieces
-        let req = PeerMessage::Request {
-            index: order as u32,
-            // begin: 0 for first block; 2^14 for second block; 2 * 2^14 for third block, etc.
-            begin: (order as u32) * 16 * 1024,
-            length: piece.len() as u32,
-        };
-        self.write(req)?;
+        // Iter & map over the requests
+        let responses = reqs
+            .iter()
+            .map(|req| {
+                // Send the request
+                self.write(req)?;
 
-        // Wait for the piece response
-        let resp = self.read()?;
-        match resp {
-            PeerMessage::Piece {
-                index,
-                begin,
-                block,
-            } => Ok(resp),
-            _ => Err(anyhow!("Expected piece message")),
-        }
+                // Wait for the piece response
+                let resp = self.read()?;
+                match resp {
+                    PeerMessage::Piece {
+                        index: _,
+                        begin: _,
+                        block: _,
+                    } => Ok(resp),
+                    _ => Err(anyhow!("Expected piece message")),
+                }
+            })
+            .collect::<Result<Vec<PeerMessage>, Error>>()?;
+
+        Ok(responses)
     }
 }
 
