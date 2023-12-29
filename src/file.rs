@@ -98,7 +98,8 @@ impl Info {
 }
 
 impl MetainfoFile {
-    pub fn read_from_file(filename: &str) -> Result<Self, std::io::Error> {
+    // Can take either PathBuf or &str
+    pub fn read_from_file<T: AsRef<std::path::Path>>(filename: T) -> std::io::Result<Self> {
         // Open the file & read it into a string
         let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
         // println!("U8: {:?}", contents_u8);

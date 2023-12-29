@@ -7,6 +7,7 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
 };
 
+const CHUNK_SIZE: i64 = 16 * 1024;
 const PEER_ID: &str = "-TR2940-2b3b6b4b5b6b";
 
 // Serialize the payload to a query string
@@ -538,7 +539,6 @@ impl PeerStream {
         piece_id: u32,
         piece_length: &i64,
     ) -> Result<Vec<PeerMessage>, Error> {
-        const CHUNK_SIZE: i64 = 16 * 1024;
         // Assert that we are in the Unchoke state
         match self.state {
             PeerState::Unchoke => {}
