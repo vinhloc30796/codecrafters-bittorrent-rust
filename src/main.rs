@@ -1,14 +1,18 @@
 use bittorrent_starter_rust::decoder::decode_bencoded_value;
 use bittorrent_starter_rust::file::{Info, MetainfoFile};
 use bittorrent_starter_rust::network::{ping_tracker, PeerMessage, PeerStream};
+use clap::{Parser, Subcommand};
 use hex::ToHex;
 use sha1::{Digest, Sha1};
-use std::path::PathBuf;
-use clap::{Parser, Subcommand};
-
+use std::{net::SocketAddrV4, path::PathBuf};
 
 #[derive(Debug, Parser)]
-#[clap(name = "your_bittorrent", version = "0.1.0", author = "Your Name")]
+#[clap(
+    name = "your_bittorrent",
+    version = "0.1.0",
+    author = "Loc Nguyen",
+    about = "A BitTorrent client written in Rust."
+)]
 struct Opts {
     #[clap(subcommand)]
     subcmd: SubCommand,
@@ -16,21 +20,22 @@ struct Opts {
 
 #[derive(Debug, Subcommand)]
 enum SubCommand {
-    Decode{
+    Decode {
         #[clap(name = "ENCODED_VALUE")]
         encoded_value: String,
     },
-    Info{
+    Info {
         #[clap(name = "TORRENT_FILE")]
         torrent_file: PathBuf,
     },
-    Peers{
+    Peers {
         #[clap(name = "TORRENT_FILE")]
         torrent_file: PathBuf,
     },
-    Handshake{
+    Handshake {
         #[clap(name = "TORRENT_FILE")]
         torrent_file: PathBuf,
+        peer_ip: SocketAddrV4,
     },
     #[clap(name = "download_piece")]
     DownloadPiece {
@@ -39,7 +44,7 @@ enum SubCommand {
         torrent_file: PathBuf,
         #[arg(default_value = "0")]
         piece_index: usize,
-    }
+    },
 }
 
 #[tokio::main]
@@ -51,13 +56,13 @@ async fn main() {
 
     match command {
         // Usage: your_bittorrent.sh decode "<encoded_value>"
-        SubCommand::Decode{encoded_value} => {
+        SubCommand::Decode { encoded_value } => {
             let (_, decoded_value) = decode_bencoded_value(encoded_value);
             let json_value = serde_json::Value::from(decoded_value);
             println!("{}", json_value);
         }
         // Usage: your_bittorrent.sh info "<torrent_file>"
-        SubCommand::Info{torrent_file} => {
+        SubCommand::Info { torrent_file } => {
             let metainfo = MetainfoFile::read_from_file(torrent_file).unwrap();
 
             // Print out the info dict
@@ -73,7 +78,7 @@ async fn main() {
             println!("Pieces Hashes:\n{}", piece_hashes.join("\n"));
         }
         // Usage: your_bittorrent.sh peers "<torrent_file>"
-        SubCommand::Peers{torrent_file} => {
+        SubCommand::Peers { torrent_file } => {
             let metainfo = MetainfoFile::read_from_file(torrent_file).unwrap();
 
             match ping_tracker(
@@ -95,7 +100,10 @@ async fn main() {
             }
         }
         // Usage: your_bittorrent.sh handshake "<torrent_file>"
-        SubCommand::Handshake{torrent_file} => {
+        SubCommand::Handshake {
+            torrent_file,
+            peer_ip,
+        } => {
             let metainfo = MetainfoFile::read_from_file(torrent_file).unwrap();
 
             let peers = match ping_tracker(
@@ -111,8 +119,10 @@ async fn main() {
                     return;
                 }
             };
-            let peer = peers.first().unwrap();
-            let mut peer_stream = PeerStream::new(*peer);
+            // Check that peer_ip is in peers
+            assert!(peers.contains(&peer_ip), "Peer IP not in peers.");
+
+            let mut peer_stream = PeerStream::new(peer_ip);
 
             match peer_stream.handshake(&metainfo.info.info_hash()) {
                 Ok(handshake) => {
@@ -194,25 +204,48 @@ async fn main() {
 
             // Chunk pieces into 16 * 1024 byte chunks with index
             // then download each chunk
-            let selected_piece_hash = &info.piece_hash()[piece_index];
+            let piece_hashes = info.piece_hash();
+            let selected_piece_hash = &piece_hashes[piece_index];
+            let piece_length = if piece_index == piece_hashes.len() - 1 {
+                info.length - (piece_index as i64 * info.piece_length)
+            } else {
+                info.piece_length
+            };
+            println!(
+                "Downloading piece {}/{} (length {}) with hash {}.",
+                piece_index + 1,
+                piece_hashes.len(),
+                piece_length,
+                selected_piece_hash
+            );
             let downloads = peer_stream
-                .download_piece(piece_index as u32, &info.piece_length)
+                .download_piece(piece_index as u32, &piece_length)
                 .unwrap();
             // Zip the downloads with the piece hashes & map to download::save_piece into /tmp/test-piece-{idx}
-            let downloaded_payload: Vec<u8> = downloads.iter().fold(vec![], |mut acc, download| {
-                match download {
-                    PeerMessage::Piece {
-                        index: _,
-                        begin: _,
-                        block,
-                    } => {
-                        // append the block to the acc
-                        acc.extend_from_slice(block);
-                    }
-                    _ => {}
-                }
-                acc
-            });
+            let downloaded_payload: Vec<u8> =
+                downloads
+                    .iter()
+                    .enumerate()
+                    .fold(vec![], |mut acc, (_index, download)| {
+                        match download {
+                            PeerMessage::Piece {
+                                index: _,
+                                begin: _,
+                                block,
+                            } => {
+                                acc.extend_from_slice(block);
+                            }
+                            _ => {}
+                        }
+                        acc
+                    });
+            assert_eq!(
+                downloaded_payload.len(),
+                piece_length as usize,
+                "Downloaded payload length {} does not match expected length {}.",
+                downloaded_payload.len(),
+                piece_length
+            );
             let mut hashers = Sha1::new();
             hashers.update(&downloaded_payload);
             let downloaded_hash: String = hashers.finalize().encode_hex::<String>();

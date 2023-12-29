@@ -1,5 +1,5 @@
 use crate::decoder::{BencodedString, BencodedValue};
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Ok};
 use serde::Serialize;
 use std::{
     fmt::{self, Display, Formatter},
@@ -247,7 +247,8 @@ pub enum PeerMessage {
     Piece {
         index: u32,
         begin: u32,
-        block: [u8; 16 * 1024],
+        // unknown length
+        block: Vec<u8>,
     },
     Cancel {
         index: u32,
@@ -271,13 +272,13 @@ impl From<Vec<u8>> for PeerMessage {
                 length: u32::from_be_bytes(value[13..].try_into().unwrap()), // [13, 14, 15, 16]
             },
             7 => {
-                let mut block = [0; 16 * 1024];
+                let mut block = vec![0; value.len() - 13];
                 // fill in block with the rest of the bytes & pad with 0s
                 block[..value.len() - 13].copy_from_slice(&value[13..]);
                 PeerMessage::Piece {
                     index: u32::from_be_bytes(value[5..9].try_into().unwrap()), // [5, 6, 7, 8]
                     begin: u32::from_be_bytes(value[9..13].try_into().unwrap()), // [9, 10, 11, 12]
-                    block,
+                    block: block.to_vec(),
                 }
             }
             8 => PeerMessage::Cancel {
@@ -546,20 +547,33 @@ impl PeerStream {
         }
 
         // Make a Vec of requests to cover piece_length with chunk
-        let n_reqs = (piece_length / CHUNK_SIZE) as usize;
+        // by ceil(piece_length / CHUNK_SIZE)
+        let n_reqs = (piece_length + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        println!("piece_length: {}, n_reqs: {}", piece_length, n_reqs);
         let reqs = (0..n_reqs)
-            .map(|i| PeerMessage::Request {
-                index: piece_id,
-                begin: (i * CHUNK_SIZE as usize) as u32,
-                length: CHUNK_SIZE as u32,
+            .map(|i| {
+                let is_last = n_reqs - 1 == i;
+                let length = if is_last {
+                    piece_length - (i as i64 * CHUNK_SIZE)
+                } else {
+                    CHUNK_SIZE
+                };
+                PeerMessage::Request {
+                    index: piece_id,
+                    begin: (i * CHUNK_SIZE) as u32,
+                    length: length as u32,
+                }
             })
             .collect::<Vec<PeerMessage>>();
 
         // Iter & map over the requests
         let responses = reqs
             .iter()
-            .map(|req| {
+            // zip with reqs
+            .enumerate()
+            .map(|(idx, req)| {
                 // Send the request
+                println!("Idx: {}; {}", idx, req);
                 self.write(req)?;
 
                 // Wait for the piece response
