@@ -1,11 +1,13 @@
 use crate::decoder::{BencodedString, BencodedValue};
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow, Error, Ok};
 use serde::Serialize;
 use std::{
+    fmt::{self, Display, Formatter},
     io::{Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
 };
 
+const CHUNK_SIZE: i64 = 16 * 1024;
 const PEER_ID: &str = "-TR2940-2b3b6b4b5b6b";
 
 // Serialize the payload to a query string
@@ -229,15 +231,366 @@ pub fn url_encode(t: &[u8; 20]) -> anyhow::Result<String> {
     Ok(s)
 }
 
-pub fn shake_hands(peer_addr: SocketAddrV4, info_hash: [u8; 20]) -> Result<PeerHandshake, Error> {
-    let mut stream = TcpStream::connect(peer_addr)?;
-    let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
-    let handshake_bytes: Vec<u8> = handshake.into();
-    stream.write_all(&handshake_bytes)?;
-    let mut buf = [0; 1024];
-    stream.read(&mut buf)?;
-    let peer_handshake = PeerHandshake::from(buf.to_vec());
-    Ok(peer_handshake)
+#[derive(Debug, PartialEq)]
+pub enum PeerMessage {
+    Choke,
+    Unchoke,
+    Interested,
+    NotInterested,
+    Have,
+    Bitfield(Vec<u8>),
+    Request {
+        index: u32,
+        begin: u32,
+        length: u32,
+    },
+    Piece {
+        index: u32,
+        begin: u32,
+        // unknown length
+        block: Vec<u8>,
+    },
+    Cancel {
+        index: u32,
+        begin: u32,
+        length: u32,
+    },
+}
+
+impl From<Vec<u8>> for PeerMessage {
+    fn from(value: Vec<u8>) -> Self {
+        match value[4] {
+            0 => PeerMessage::Choke,
+            1 => PeerMessage::Unchoke,
+            2 => PeerMessage::Interested,
+            3 => PeerMessage::NotInterested,
+            4 => PeerMessage::Have,
+            5 => PeerMessage::Bitfield(value[5..].to_vec()),
+            6 => PeerMessage::Request {
+                index: u32::from_be_bytes(value[5..9].try_into().unwrap()), // [5, 6, 7, 8]
+                begin: u32::from_be_bytes(value[9..13].try_into().unwrap()), // [9, 10, 11, 12]
+                length: u32::from_be_bytes(value[13..].try_into().unwrap()), // [13, 14, 15, 16]
+            },
+            7 => {
+                let mut block = vec![0; value.len() - 13];
+                // fill in block with the rest of the bytes & pad with 0s
+                block[..value.len() - 13].copy_from_slice(&value[13..]);
+                PeerMessage::Piece {
+                    index: u32::from_be_bytes(value[5..9].try_into().unwrap()), // [5, 6, 7, 8]
+                    begin: u32::from_be_bytes(value[9..13].try_into().unwrap()), // [9, 10, 11, 12]
+                    block: block.to_vec(),
+                }
+            }
+            8 => PeerMessage::Cancel {
+                index: u32::from_be_bytes(value[5..9].try_into().unwrap()), // [5, 6, 7, 8]
+                begin: u32::from_be_bytes(value[9..13].try_into().unwrap()), // [9, 10, 11, 12]
+                length: u32::from_be_bytes([value[13], value[14], value[15], value[16]]),
+            },
+            _ => panic!("Invalid message type"),
+        }
+    }
+}
+
+impl From<&PeerMessage> for Vec<u8> {
+    fn from(value: &PeerMessage) -> Self {
+        let mut message: Vec<u8> = Vec::new();
+        match value {
+            PeerMessage::Choke => {
+                let length = 1 as u32;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(0)
+            }
+            PeerMessage::Unchoke => {
+                let length = 1 as u32;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(1)
+            }
+            PeerMessage::Interested => {
+                let length = 1 as u32;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(2)
+            }
+            PeerMessage::NotInterested => {
+                let length = 1 as u32;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(3)
+            }
+            PeerMessage::Have => {
+                let length = 5 as u32;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(4)
+            }
+            PeerMessage::Bitfield(payload) => {
+                let length = payload.len() as u32 + 1;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(5);
+                message.extend(payload);
+            }
+            PeerMessage::Request {
+                index,
+                begin,
+                length,
+            } => {
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(6);
+                message.extend(index.to_be_bytes().to_vec());
+                message.extend(begin.to_be_bytes().to_vec());
+                message.extend(length.to_be_bytes().to_vec());
+            }
+            PeerMessage::Piece {
+                index,
+                begin,
+                block,
+            } => {
+                let length = 9 + block.len() as u32;
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(7);
+                message.extend(index.to_be_bytes().to_vec());
+                message.extend(begin.to_be_bytes().to_vec());
+                message.extend(block.to_vec());
+            }
+            PeerMessage::Cancel {
+                index,
+                begin,
+                length,
+            } => {
+                message.extend(length.to_be_bytes().to_vec());
+                message.push(8);
+                message.extend(index.to_be_bytes().to_vec());
+                message.extend(begin.to_be_bytes().to_vec());
+                message.extend(length.to_be_bytes().to_vec());
+            }
+        }
+        message
+    }
+}
+
+impl Display for PeerMessage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            PeerMessage::Choke => write!(f, "Choke"),
+            PeerMessage::Unchoke => write!(f, "Unchoke"),
+            PeerMessage::Interested => write!(f, "Interested"),
+            PeerMessage::NotInterested => write!(f, "NotInterested"),
+            PeerMessage::Have => write!(f, "Have"),
+            PeerMessage::Bitfield(_) => write!(f, "Bitfield"),
+            PeerMessage::Request {
+                index,
+                begin,
+                length,
+            } => write!(
+                f,
+                "Request {{ index: {}, begin: {}, length: {} }}",
+                index, begin, length
+            ),
+            PeerMessage::Piece {
+                index,
+                begin: _,
+                block,
+            } => write!(
+                f,
+                "Piece {{ index: {}, block: {:?}... }}",
+                index,
+                // trim the block to the first 10 bytes
+                &block[..10]
+            ),
+            PeerMessage::Cancel {
+                index,
+                begin,
+                length,
+            } => write!(
+                f,
+                "Cancel {{ index: {}, begin: {}, length: {} }}",
+                index, begin, length
+            ),
+        }
+    }
+}
+
+pub struct PeerStream {
+    stream: TcpStream,
+    state: PeerState,
+}
+
+enum PeerState {
+    Init = 0,
+    Handshake,
+    Bitfield,
+    Interested,
+    Unchoke,
+}
+
+impl PeerStream {
+    pub fn new(peer_addr: SocketAddrV4) -> Self {
+        let stream = TcpStream::connect(peer_addr).unwrap();
+        PeerStream {
+            stream,
+            state: PeerState::Init,
+        }
+    }
+
+    pub fn handshake(&mut self, info_hash: &[u8; 20]) -> Result<PeerHandshake, Error> {
+        let handshake = PeerHandshake::new(info_hash.to_vec(), PEER_ID.as_bytes().to_vec());
+        let handshake_bytes: Vec<u8> = handshake.into();
+        self.stream.write_all(&handshake_bytes)?;
+
+        // Read the handshake response
+        let mut buf = [0; 68];
+        self.stream.read(&mut buf)?;
+        let peer_handshake = PeerHandshake::from(buf.to_vec());
+        self.state = PeerState::Handshake;
+        // println!("Peer Handshake: {:?}", peer_handshake);
+        Ok(peer_handshake)
+    }
+
+    pub fn read(&mut self) -> Result<PeerMessage, Error> {
+        // Assert that we are at least in the handshake state
+        match self.state {
+            PeerState::Init => panic!("Cannot read if not yet handshaked"),
+            _ => {}
+        }
+
+        // Read the length prefix
+        let mut length_prefix: [u8; 4] = [0; 4];
+        self.stream.read_exact(&mut length_prefix)?;
+        let length = u32::from_be_bytes(length_prefix);
+
+        // Read the message type
+        let mut message_type: [u8; 1] = [0; 1];
+        self.stream.read_exact(&mut message_type)?;
+
+        // Read the payload
+        let mut payload: Vec<u8> = vec![0; length as usize - 1];
+        self.stream.read_exact(&mut payload)?;
+
+        let mut full_msg: Vec<u8> = Vec::new();
+        full_msg.extend(length_prefix.to_vec());
+        full_msg.extend(message_type.to_vec());
+        full_msg.extend(payload.to_vec());
+        let msg = PeerMessage::from(full_msg);
+        Ok(msg)
+    }
+
+    pub fn write(&mut self, message: &PeerMessage) -> Result<(), Error> {
+        // Assert that we are in the handshake state
+        match self.state {
+            PeerState::Init => return Err(anyhow!("Cannot write if not yet handshaked")),
+            _ => {}
+        }
+
+        // Write the message
+        let message_bytes: Vec<u8> = message.into();
+        self.stream.write_all(&message_bytes)?;
+        Ok(())
+    }
+
+    // Specific steps
+    pub fn read_bitfield(&mut self) -> Result<PeerMessage, Error> {
+        // Assert that we are in the handshake state
+        match self.state {
+            PeerState::Handshake => {}
+            _ => return Err(anyhow!("Bitfield can only be read from Handshake")),
+        }
+
+        // Read the bitfield message
+        let message = self.read()?;
+        match message {
+            PeerMessage::Bitfield(_) => {
+                self.state = PeerState::Bitfield;
+                Ok(message)
+            }
+            _ => Err(anyhow!("Expected bitfield message")),
+        }
+    }
+
+    pub fn write_interested(&mut self) -> Result<(), Error> {
+        // Assert that we are in the Bitfield state
+        match self.state {
+            PeerState::Bitfield => {}
+            _ => return Err(anyhow!("Not in bitfield state")),
+        }
+
+        // Write the interested message
+        let message = PeerMessage::Interested;
+        self.write(&message)?;
+        self.state = PeerState::Interested;
+        Ok(())
+    }
+
+    pub fn read_unchoke(&mut self) -> Result<PeerMessage, Error> {
+        // Assert that we are in the Interested state
+        match self.state {
+            PeerState::Interested => {}
+            _ => return Err(anyhow!("Not in interested state")),
+        }
+
+        // Read the unchoke message
+        let message = self.read()?;
+        match message {
+            PeerMessage::Unchoke => {
+                self.state = PeerState::Unchoke;
+                Ok(message)
+            }
+            _ => Err(anyhow!("Expected unchoke message")),
+        }
+    }
+
+    pub fn download_piece(
+        &mut self,
+        piece_id: u32,
+        piece_length: &i64,
+    ) -> Result<Vec<PeerMessage>, Error> {
+        // Assert that we are in the Unchoke state
+        match self.state {
+            PeerState::Unchoke => {}
+            _ => return Err(anyhow!("Not in unchoke state")),
+        }
+
+        // Make a Vec of requests to cover piece_length with chunk
+        // by ceil(piece_length / CHUNK_SIZE)
+        let n_reqs = (piece_length + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        println!("piece_length: {}, n_reqs: {}", piece_length, n_reqs);
+        let reqs = (0..n_reqs)
+            .map(|i| {
+                let is_last = n_reqs - 1 == i;
+                let length = if is_last {
+                    piece_length - (i as i64 * CHUNK_SIZE)
+                } else {
+                    CHUNK_SIZE
+                };
+                PeerMessage::Request {
+                    index: piece_id,
+                    begin: (i * CHUNK_SIZE) as u32,
+                    length: length as u32,
+                }
+            })
+            .collect::<Vec<PeerMessage>>();
+
+        // Iter & map over the requests
+        let responses = reqs
+            .iter()
+            // zip with reqs
+            .enumerate()
+            .map(|(idx, req)| {
+                // Send the request
+                println!("Idx: {}; {}", idx, req);
+                self.write(req)?;
+
+                // Wait for the piece response
+                let resp = self.read()?;
+                match resp {
+                    PeerMessage::Piece {
+                        index: _,
+                        begin: _,
+                        block: _,
+                    } => Ok(resp),
+                    _ => Err(anyhow!("Expected piece message")),
+                }
+            })
+            .collect::<Result<Vec<PeerMessage>, Error>>()?;
+
+        Ok(responses)
+    }
 }
 
 #[cfg(test)]
@@ -289,7 +642,7 @@ mod tests {
     fn test_tracker_response_try_from() {
         let bencoded = BencodedValue::from(
             b"d8:intervali1800e5:peers12:\x7f\x00\x00\x01\x1a\x90\x7f\x00\x00\x01\x1b\x90e"
-            .as_slice(),
+                .as_slice(),
         );
         let tracker_response = TrackerResponse::try_from(&bencoded).unwrap();
         assert_eq!(tracker_response.interval, 1800);
@@ -361,5 +714,18 @@ mod tests {
                 50, 98, 51, 98, 54, 98, 52, 98, 53, 98, 54
             ]
         );
+    }
+
+    #[test]
+    fn test_peer_message_from() {
+        // Choke
+        let message_bytes = vec![0, 0, 0, 1, 0];
+        let message = PeerMessage::from(message_bytes);
+        assert_eq!(message, PeerMessage::Choke);
+
+        // Bitfield
+        let message_bytes = vec![0, 0, 0, 6, 5, 1, 2, 3, 4, 5];
+        let message = PeerMessage::from(message_bytes);
+        assert_eq!(message, PeerMessage::Bitfield(vec![1, 2, 3, 4, 5]));
     }
 }

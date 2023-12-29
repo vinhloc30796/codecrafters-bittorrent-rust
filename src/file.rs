@@ -74,6 +74,18 @@ impl Info {
         hasher.finalize().into()
     }
 
+    pub fn pieces(&self) -> Vec<[u8; 20]> {
+        return self
+            .pieces
+            .chunks(20)
+            .map(|chunk| {
+                let mut array = [0; 20];
+                array.copy_from_slice(chunk);
+                array
+            })
+            .collect();
+    }
+
     pub fn piece_hash(&self) -> Vec<String> {
         // Pieces is a byte string, so we need to split it into 20 byte chunks
         let piece_chunks = self.pieces.chunks(20);
@@ -86,7 +98,8 @@ impl Info {
 }
 
 impl MetainfoFile {
-    pub fn read_from_file(filename: &str) -> Result<Self, std::io::Error> {
+    // Can take either PathBuf or &str
+    pub fn read_from_file<T: AsRef<std::path::Path>>(filename: T) -> std::io::Result<Self> {
         // Open the file & read it into a string
         let contents_u8: &[u8] = &std::fs::read(filename).unwrap();
         // println!("U8: {:?}", contents_u8);
