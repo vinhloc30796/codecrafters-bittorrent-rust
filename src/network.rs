@@ -1,11 +1,10 @@
 use crate::decoder::{BencodedString, BencodedValue};
-use anyhow::{anyhow, Context, Error};
+use anyhow::{anyhow, Error};
 use serde::Serialize;
 use std::{
     fmt::{self, Display, Formatter},
     io::{Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpStream},
-    path::PathBuf,
 };
 
 const PEER_ID: &str = "-TR2940-2b3b6b4b5b6b";
