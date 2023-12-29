@@ -169,31 +169,28 @@ async fn main() {
                 .download_piece(selected_index as u32, &info.piece_length)
                 .unwrap();
             // Zip the downloads with the piece hashes & map to download::save_piece into /tmp/test-piece-{idx}
-            let downloaded_payload: Vec<u8> =
-                downloads
-                    .iter()
-                    .enumerate()
-                    .fold(vec![], |mut acc, (_idx, download)| {
-                        match download {
-                            PeerMessage::Piece {
-                                index: _,
-                                begin: _,
-                                block,
-                            } => {
-                                // append the block to the acc
-                                acc.extend_from_slice(block);
-                            }
-                            _ => {}
-                        }
-                        acc
-                    });
+            let downloaded_payload: Vec<u8> = downloads.iter().fold(vec![], |mut acc, download| {
+                match download {
+                    PeerMessage::Piece {
+                        index: _,
+                        begin: _,
+                        block,
+                    } => {
+                        // append the block to the acc
+                        acc.extend_from_slice(block);
+                    }
+                    _ => {}
+                }
+                acc
+            });
             let mut hashers = Sha1::new();
             hashers.update(&downloaded_payload);
             let downloaded_hash: String = hashers.finalize().encode_hex::<String>();
             if &downloaded_hash == selected_piece_hash {
                 // Save the piece to /tmp/test-piece-{idx}
                 std::fs::write(&output, downloaded_payload).unwrap();
-                println!("Piece {} downloaded to {:?}.", selected_index, &output);
+                let output_str = output.to_str().unwrap();
+                println!("Piece {} downloaded to {}.", selected_index, output_str);
             } else {
                 println!(
                     "Downloaded piece {} hash {} does not match expected hash {}.",

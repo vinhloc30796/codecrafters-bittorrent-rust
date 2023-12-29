@@ -384,7 +384,7 @@ impl Display for PeerMessage {
             ),
             PeerMessage::Piece {
                 index,
-                begin,
+                begin: _,
                 block,
             } => write!(
                 f,
@@ -417,8 +417,6 @@ enum PeerState {
     Bitfield,
     Interested,
     Unchoke,
-    Request,
-    Piece,
 }
 
 impl PeerStream {
