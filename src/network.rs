@@ -1,6 +1,3 @@
-use hex::ToHex;
-use sha1::{Digest, Sha1};
-
 use crate::decoder::{BencodedString, BencodedValue};
 use anyhow::{anyhow, Error};
 use serde::Serialize;

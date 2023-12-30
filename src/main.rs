@@ -2,8 +2,7 @@ use bittorrent_starter_rust::decoder::decode_bencoded_value;
 use bittorrent_starter_rust::file::{Info, MetainfoFile};
 use bittorrent_starter_rust::network::{ping_tracker, PeerMessage, PeerStream};
 use clap::{Parser, Subcommand};
-use hex::ToHex;
-use sha1::{Digest, Sha1};
+use std::io::Write;
 use std::{net::SocketAddrV4, path::PathBuf};
 
 #[derive(Debug, Parser)]
@@ -44,6 +43,11 @@ enum SubCommand {
         torrent_file: PathBuf,
         #[arg(default_value = "0")]
         piece_index: usize,
+    },
+    Download {
+        #[arg(short = 'o', default_value = "/tmp/test-piece-0")]
+        output: PathBuf,
+        torrent_file: PathBuf,
     },
 }
 
@@ -145,6 +149,7 @@ async fn main() {
             torrent_file,
             piece_index,
         } => {
+            // Prepare the peer stream
             let metainfo = MetainfoFile::read_from_file(torrent_file).unwrap();
             let info: Info = metainfo.info;
 
@@ -172,18 +177,16 @@ async fn main() {
             // Chunk pieces into 16 * 1024 byte chunks with index
             // then download each chunk
             let piece_hashes = info.piece_hash();
-            let selected_piece_hash = &piece_hashes[piece_index];
             let piece_length = if piece_index == piece_hashes.len() - 1 {
                 info.length - (piece_index as i64 * info.piece_length)
             } else {
                 info.piece_length
             };
             println!(
-                "Downloading piece {}/{} (length {}) with hash {}.",
+                "Downloading piece {}/{} (length {})",
                 piece_index + 1,
                 piece_hashes.len(),
                 piece_length,
-                selected_piece_hash
             );
             let downloads = peer_stream
                 .download_piece(piece_index as u32, &piece_length)
@@ -215,20 +218,111 @@ async fn main() {
                 downloaded_payload.len(),
                 piece_length
             );
-            let mut hashers = Sha1::new();
-            hashers.update(&downloaded_payload);
-            let downloaded_hash: String = hashers.finalize().encode_hex::<String>();
-            if &downloaded_hash == selected_piece_hash {
+            let verified = info.verify_piece(piece_index, &downloaded_payload);
+            if verified {
                 // Save the piece to /tmp/test-piece-{idx}
                 std::fs::write(&output, downloaded_payload).unwrap();
                 let output_str = output.to_str().unwrap();
                 println!("Piece {} downloaded to {}.", piece_index, output_str);
             } else {
-                println!(
-                    "Downloaded piece {} hash {} does not match expected hash {}.",
-                    piece_index, downloaded_hash, selected_piece_hash
-                );
+                panic!("Downloaded piece failed verification.");
             }
+        }
+        SubCommand::Download {
+            output,
+            torrent_file,
+        } => {
+            let metainfo = MetainfoFile::read_from_file(torrent_file).unwrap();
+            let info: Info = metainfo.info;
+
+            let peers =
+                match ping_tracker(metainfo.announce.as_str(), info.info_hash(), info.length).await
+                {
+                    Ok(tracker_response) => tracker_response.peers,
+                    Err(e) => {
+                        println!("Peers: Error: {}", e);
+                        return;
+                    }
+                };
+            let peer = peers.first().unwrap();
+            let mut peer_stream = PeerStream::new(*peer);
+
+            match peer_stream.prep_download(&info.info_hash()) {
+                Ok(prepped) => {
+                    println!("Prepped: {:?}", prepped);
+                }
+                Err(e) => {
+                    println!("Prepped: Error: {}", e);
+                }
+            }
+
+            // Download all the pieces
+            let all_downloads: Vec<Vec<PeerMessage>> = (0..info.piece_hash().len())
+                .map(|piece_index| {
+                    let piece_hashes = info.piece_hash();
+                    let piece_length = if piece_index == piece_hashes.len() - 1 {
+                        info.length - (piece_index as i64 * info.piece_length)
+                    } else {
+                        info.piece_length
+                    };
+                    println!(
+                        "Downloading piece {}/{} (length {})",
+                        piece_index + 1,
+                        piece_hashes.len(),
+                        piece_length,
+                    );
+                    let downloads = peer_stream
+                        .download_piece(piece_index as u32, &piece_length)
+                        .unwrap();
+                    downloads
+                })
+                .collect();
+
+            // Combine the downloads into a single payload
+            let downloaded_payloads: Vec<Vec<u8>> = all_downloads
+                .iter()
+                .map(|downloads| {
+                    downloads
+                        .iter()
+                        .enumerate()
+                        .fold(vec![], |mut acc, (_index, download)| {
+                            match download {
+                                PeerMessage::Piece {
+                                    index: _,
+                                    begin: _,
+                                    block,
+                                } => {
+                                    acc.extend_from_slice(block);
+                                }
+                                _ => {
+                                    panic!("Expected Piece message, got {:?}", download);
+                                }
+                            }
+                            acc
+                        })
+                })
+                .collect();
+
+            // Verify the payload
+            downloaded_payloads
+                .iter()
+                .enumerate()
+                .all(
+                    |(piece_index, payload)| match info.verify_piece(piece_index, payload) {
+                        true => true,
+                        false => {
+                            println!("Piece {} failed verification.", piece_index);
+                            panic!("Downloaded piece {} failed verification.", piece_index);
+                        }
+                    },
+                );
+
+            // Combine all the payload & save to output
+            let mut output_file = std::fs::File::create(&output).unwrap();
+            downloaded_payloads.iter().for_each(|payload| {
+                output_file.write_all(payload).unwrap();
+            });
+            println!("Downloaded file saved to {}.", output.to_str().unwrap());
         }
     }
 }
