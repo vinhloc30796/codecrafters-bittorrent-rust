@@ -1,5 +1,5 @@
 use crate::decoder::{BencodedString, BencodedValue};
-use anyhow::{anyhow, Error, Ok};
+use anyhow::{anyhow, Error};
 use serde::Serialize;
 use std::{
     fmt::{self, Display, Formatter},
@@ -533,6 +533,56 @@ impl PeerStream {
             }
             _ => Err(anyhow!("Expected unchoke message")),
         }
+    }
+    
+    pub fn prep_download(&mut self, info_hash: &[u8;20]) -> Result<(), Error> {
+        // Handshake
+        match self.handshake(info_hash) {
+            Ok(handshake) => {
+                println!("Handshake: {:?}", handshake);
+                let hex_peer_id = handshake
+                    .peer_id
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>();
+                println!("Peer ID: {}", hex_peer_id);
+            }
+            Err(e) => {
+                println!("Handshake: Error: {}", e);
+                return Err(e);
+            }
+        }
+        // Bitfield
+        match self.read_bitfield() {
+            Ok(bitfield) => {
+                println!("Bitfield: {:?}", bitfield);
+            }
+            Err(e) => {
+                println!("Bitfield: Error: {}", e);
+                return Err(e);
+            }
+        }
+        // Interest
+        match self.write_interested() {
+            Ok(_) => {
+                println!("Interested: Sent");
+            }
+            Err(e) => {
+                println!("Interested: Error: {}", e);
+                return Err(e);
+            }
+        }
+        // Unchoke
+        match self.read_unchoke() {
+            Ok(_) => {
+                println!("Unchoke: Received");
+            }
+            Err(e) => {
+                println!("Unchoke: Error: {}", e);
+                return Err(e);
+            }
+        }
+        return Ok(());
     }
 
     pub fn download_piece(

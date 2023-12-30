@@ -95,6 +95,19 @@ impl Info {
             .map(|chunk| chunk.encode_hex::<String>())
             .collect::<Vec<String>>()
     }
+
+    pub fn verify_piece(&self, piece_index: usize, piece: &[u8]) -> bool {
+        let piece_hashes = self.piece_hash();
+        let selected_piece_hash = &piece_hashes[piece_index];
+        let mut hasher = Sha1::new();
+        hasher.update(piece);
+        let downloaded_hash: String = hasher.finalize().encode_hex::<String>();
+        if &downloaded_hash == selected_piece_hash {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl MetainfoFile {
