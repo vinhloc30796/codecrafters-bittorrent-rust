@@ -160,45 +160,12 @@ async fn main() {
             let peer = peers.first().unwrap();
             let mut peer_stream = PeerStream::new(*peer);
 
-            match peer_stream.handshake(&info.info_hash()) {
-                Ok(handshake) => {
-                    println!("Handshake: {:?}", handshake);
-                    let hex_peer_id = handshake
-                        .peer_id
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<String>();
-                    println!("Peer ID: {}", hex_peer_id);
+            match peer_stream.prep_download(&info.info_hash()) {
+                Ok(prepped) => {
+                    println!("Prepped: {:?}", prepped);
                 }
                 Err(e) => {
-                    println!("Handshake: Error: {}", e);
-                }
-            }
-
-            match peer_stream.read_bitfield() {
-                Ok(bitfield) => {
-                    println!("Bitfield: {:?}", bitfield);
-                }
-                Err(e) => {
-                    println!("Bitfield: Error: {}", e);
-                }
-            }
-
-            match peer_stream.write_interested() {
-                Ok(_) => {
-                    println!("Interested: Sent");
-                }
-                Err(e) => {
-                    println!("Interested: Error: {}", e);
-                }
-            }
-
-            match peer_stream.read_unchoke() {
-                Ok(_) => {
-                    println!("Unchoke: Received");
-                }
-                Err(e) => {
-                    println!("Unchoke: Error: {}", e);
+                    println!("Prepped: Error: {}", e);
                 }
             }
 
@@ -235,7 +202,9 @@ async fn main() {
                             } => {
                                 acc.extend_from_slice(block);
                             }
-                            _ => {}
+                            _ => {
+                                panic!("Expected Piece message, got {:?}", download);
+                            }
                         }
                         acc
                     });
